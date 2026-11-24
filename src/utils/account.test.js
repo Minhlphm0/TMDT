@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { webcrypto } from 'node:crypto'
 import { authenticateAccount, clearAccountSession, registerAccount, restoreAccountSession, saveAccountSession } from './account.js'
+import { writeCollection } from './store.js'
 
 class MemoryStorage {
   values = new Map()
@@ -53,4 +54,35 @@ test('remember choice survives reload in the matching storage and logout clears 
 
   clearAccountSession(local, session)
   assert.equal(restoreAccountSession(local, session), null)
+})
+
+test('registration survives repeated logout and sign-in with a stable account identity', async () => {
+  const local = new MemoryStorage()
+  const session = new MemoryStorage()
+  const form = { name: 'Customer A', email: 'customer.a@example.com', phone: '0901234567', password: 'PcTech!2026' }
+  const registered = await registerAccount(local, form, webcrypto)
+  saveAccountSession(local, session, registered, true)
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    clearAccountSession(local, session)
+    assert.equal(JSON.parse(local.getItem('pct-users')).length, 1)
+    const signedIn = await authenticateAccount(local, 'CUSTOMER.A@EXAMPLE.COM', form.password, webcrypto)
+    assert.equal(signedIn.id, registered.id)
+    assert.equal(signedIn.userId, registered.id)
+    saveAccountSession(local, session, signedIn, true)
+    assert.equal(restoreAccountSession(local, session).id, registered.id)
+  }
+})
+
+test('legacy username sign-in resolves the account in the canonical store', async () => {
+  const storage = new MemoryStorage()
+  const form = { name: 'Named User', email: 'named@example.com', phone: '0905555666', password: 'PcTech!2026' }
+  const registered = await registerAccount(storage, form, webcrypto)
+  const accounts = JSON.parse(storage.getItem('pct-users'))
+  accounts[0].username = 'named-user'
+  writeCollection('accounts', accounts, storage)
+
+  const signedIn = await authenticateAccount(storage, 'NAMED-USER', form.password, webcrypto)
+  assert.equal(signedIn.email, registered.email)
+  assert.equal(signedIn.id, registered.id)
 })

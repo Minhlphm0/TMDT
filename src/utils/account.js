@@ -1,13 +1,10 @@
-const USERS_KEY = 'pct-users'
+import { createId, readCollection, writeCollection } from './store.js'
+
 const LOCAL_SESSION_KEY = 'pct-user'
 const TEMP_SESSION_KEY = 'pct-session-user'
 
 function readUsers(storage) {
-  try {
-    return JSON.parse(storage.getItem(USERS_KEY) || '[]')
-  } catch {
-    return []
-  }
+  return readCollection('accounts', storage)
 }
 
 function normalizeEmail(value = '') {
@@ -16,6 +13,10 @@ function normalizeEmail(value = '') {
 
 function normalizePhone(value = '') {
   return String(value).replace(/[\s().-]/g, '')
+}
+
+function normalizeUsername(value = '') {
+  return String(value).trim().toLowerCase()
 }
 
 export function saveAccountSession(localStorage, sessionStorage, account, remember) {
@@ -80,6 +81,7 @@ export async function registerAccount(storage, details, cryptoApi = globalThis.c
 
   const credentials = await createPasswordHash(details.password, cryptoApi)
   const account = {
+    id: createId('USR'),
     name: details.name.trim(),
     email,
     phone: normalizePhone(details.phone),
@@ -87,15 +89,15 @@ export async function registerAccount(storage, details, cryptoApi = globalThis.c
     createdAt: new Date().toISOString(),
   }
 
-  storage.setItem(USERS_KEY, JSON.stringify([...users, account]))
-  return { name: account.name, email: account.email, phone: account.phone }
+  writeCollection('accounts', [...users, account], storage)
+  return { id: account.id, userId: account.id, name: account.name, email: account.email, phone: account.phone }
 }
 
 export async function authenticateAccount(storage, identifier, password, cryptoApi = globalThis.crypto) {
   const lookup = identifier.trim().toLowerCase()
   const users = readUsers(storage)
   const account = users.find(user =>
-    normalizeEmail(user.email) === lookup || normalizePhone(user.phone || '') === normalizePhone(lookup),
+    normalizeEmail(user.email) === lookup || normalizeUsername(user.username) === lookup || normalizePhone(user.phone || '') === normalizePhone(lookup),
   )
 
   if (!account) throw new Error('Tài khoản chưa được đăng ký.')
@@ -103,18 +105,25 @@ export async function authenticateAccount(storage, identifier, password, cryptoA
   let valid = false
   if (account.passwordHash && account.passwordSalt) {
     valid = await verifyPassword(password, account.passwordSalt, account.passwordHash, cryptoApi)
+    if (valid && !account.id) {
+      const migrated = users.map(user => user === account ? { ...user, id: createId('USR') } : user)
+      writeCollection('accounts', migrated, storage)
+      account.id = migrated.find(user => normalizeEmail(user.email) === normalizeEmail(account.email))?.id
+    }
   } else if (account.password) {
     // Migrate legacy demo accounts to a salted hash after successful sign-in.
     valid = account.password === password
     if (valid) {
       const credentials = await createPasswordHash(password, cryptoApi)
       const migrated = users.map(user => user === account
-        ? { ...user, ...credentials, password: undefined }
+        ? { ...user, id: user.id || createId('USR'), ...credentials, password: undefined }
         : user)
-      storage.setItem(USERS_KEY, JSON.stringify(migrated))
+      writeCollection('accounts', migrated, storage)
+      account.id = migrated.find(user => normalizeEmail(user.email) === normalizeEmail(account.email))?.id
     }
   }
 
   if (!valid) throw new Error('Mật khẩu chưa chính xác.')
-  return { name: account.name, email: account.email, phone: account.phone || '' }
+  const identity = account.id || normalizeEmail(account.email)
+  return { id: identity, userId: identity, name: account.name, email: account.email, phone: account.phone || '' }
 }
